@@ -2,7 +2,7 @@
 AUV dynamical system implemented by Justin Kleiber
 """
 
-from math import fmod
+from math import cos, fmod
 import gym
 from gym import spaces
 
@@ -25,7 +25,10 @@ class AUVControlEnv(gym.Env):
         4       Depth Error     -15                 15
 
     Actions:
-        Type: IDK
+        Type: Box(2)
+        Num     Action              Min                 Max
+        0       Elevator Angle      -0.349 (20 deg)     0.349 (20 deg)
+        1       Rudder Angle        -0.349 (20 deg)     0.349 (20 deg)
 
     Reward:
         Reward is R = -1*yaw_error^2 - 1*depth_error^2 for each step. Thus being 
@@ -51,6 +54,10 @@ class AUVControlEnv(gym.Env):
         self.mass = 80
         self.buoy = 0.002
 
+        # Simulation parameters
+        self.dt = 0.1
+        self.target_speed = 2 # m/s
+
         # Environment boundaries
         self.pitch_limit = 0.349
         self.yaw_error_limit = np.math.pi
@@ -69,6 +76,12 @@ class AUVControlEnv(gym.Env):
         bound = np.array(self.obs_limits, dtype=np.float32)
         self.observation_space = spaces.Box(-bound, bound, dtype=np.float32)
 
+        # Define action space
+        self.max_fin_angle = 0.349
+        self.action_space = spaces.Box(
+            low = -1*self.max_fin_angle, high = self.max_fin_angle, shape = (2,), dtype = np.float32
+            )
+
         # Define the goal state to be 90 deg yaw at 5m depth
         self.goal = np.array([
             0,
@@ -78,7 +91,11 @@ class AUVControlEnv(gym.Env):
             5
         ], dtype=np.float32)
 
+        # Set the random seed for the environment
+        self.set_random_seed()
+
         # Define the state dynamics
+        self.full_auv_state = None
         self.auv_state = None
         self.error_state = None
 
@@ -87,7 +104,9 @@ class AUVControlEnv(gym.Env):
 
     def reset(self):
         # Random initial state
-        self.auv_state = np.array([
+        self.full_auv_state = np.array([
+            0,
+            0,
             0,
             0,
             self.gen_random.uniform(low = 0, high = 2*np.math.pi, size=1),
@@ -95,20 +114,33 @@ class AUVControlEnv(gym.Env):
             self.gen_random.uniform(low = 1, high = 10, size=1)
         ], dtype=np.float32)
 
-        # Get the error state
-        self.error_state = self.goal - self.auv_state
-
-        # Wrap the error for yaw
-        self.error_state[3] = self.wrap_yaw_error(
-                                self.wrap_angle(self.goal[3]), 
-                                self.wrap_angle(self.auv_state[3])
-                                )
+        # Update the AUV state and error state
+        self.update_auv_state()
 
         return self.error_state
 
     def step(self, action):
+        # err_msg = "%r (%s) invalid" % (action, type(action))
+        # assert self.action_space.contains(action), err_msg
 
-        pass
+        # Compute the state update equations
+        self.full_auv_state = self.dynamics(action)
+
+        # State variables
+        depth = self.full_auv_state[6]
+
+        # Is the simulation done?
+        done = False
+
+        # Done if the vehicle re-surfaces
+        if depth <= 0:
+            done = True
+        
+        
+        # Update the AUV state and error state
+        self.update_auv_state()
+
+        return self.error_state, self.reward_fn(), done, {}
 
     def render(self):
         pass
@@ -118,6 +150,55 @@ class AUVControlEnv(gym.Env):
 
     def set_goal(self, goal):
         pass
+
+    def dynamics(self, u):
+        # State vector
+        x = self.full_auv_state[0:6]
+        depth = self.full_auv_state[6]
+
+        # Linear System for Pitch and Yaw
+        A = np.array(
+            [
+            [  0.96, 0, 0.03,      0, 0,     0],
+            [-0.004, 1,  0.1,      0, 0,     0],
+            [ -0.09, 0,    1,      0, 0,     0],
+            [     0, 0,    0,      1, 0, 0.017],
+            [     0, 0,    0, -0.007, 1,   0.1],
+            [     0, 0,    0,  -0.14, 0,   0.9]
+        ], dtype=np.float32)
+        
+        B = np.array(
+            [
+            [0.007,      0],
+            [0.001,      0],
+            [0.026,      0],
+            [    0,  0.007],
+            [    0, -0.001],
+            [    0, -0.036]
+        ], dtype=np.float32)
+
+        # Linear model update 
+        xp1 = (A@x) + (B@u)
+
+        # Update Depth (nonlinear)
+        depth = depth - self.buoy*self.mass*self.dt + (x[0]*np.cos(x[1]) - self.target_speed*np.sin(x[1]))*self.dt 
+
+        # Return the full dynamics
+        new_state = np.append(xp1,depth)
+        return new_state
+
+    def update_auv_state(self):
+        # update the open AI gym auv state from the full state
+        self.auv_state = self.full_auv_state[[1,2,4,5,6]]
+
+        # Get the error state
+        self.error_state = self.goal - self.auv_state
+
+        # Wrap the error for yaw
+        self.error_state[3] = self.wrap_yaw_error(
+                                self.wrap_angle(self.goal[3]), 
+                                self.wrap_angle(self.auv_state[3])
+                                )
 
     def wrap_angle(self, angle):
         assert self.yaw_max > self.yaw_min
