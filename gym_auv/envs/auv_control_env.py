@@ -158,7 +158,7 @@ class AUVControlEnv(gym.Env):
         pass
 
     def reward_fn(self):
-        return -1 * self.error_state.dot(self.error_state)
+        return -1 * np.sqrt(self.error_state.dot(self.error_state))
 
     def set_goal(self, goal):
         self.goal = goal
@@ -209,9 +209,9 @@ class AUVControlEnv(gym.Env):
         self.error_state = self.goal - self.auv_state
 
         # Wrap the error for yaw
-        self.error_state[3] = self.wrap_yaw_error(
-                                self.wrap_angle(self.goal[3]),
-                                self.wrap_angle(self.auv_state[3])
+        self.error_state[2] = self.wrap_yaw_error(
+                                self.wrap_angle(self.goal[2]),
+                                self.wrap_angle(self.auv_state[2])
                                 )
 
     def wrap_angle(self, angle):
