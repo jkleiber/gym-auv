@@ -61,9 +61,9 @@ class AUVDepthControlGameEnv(gym.Env):
         self.early_stop_penalty = 0 #-10000
 
         # Environment boundaries
-        self.pitch_limit = radians(30)
+        self.pitch_limit = radians(5)
         self.yaw_error_limit = np.math.pi
-        self.depth_limit = 2
+        self.depth_limit = 1.3
         self.yaw_max = 2*np.math.pi
         self.yaw_min = 0
 
@@ -82,7 +82,7 @@ class AUVDepthControlGameEnv(gym.Env):
             low = -1*self.max_fin_angle, high = self.max_fin_angle, shape = (2,), dtype = np.float32
             )
 
-        # Define the goal state to be at 7m depth
+        # Define the goal state to be at 1m depth
         self.goal = np.array([
             0,
             0,
@@ -106,7 +106,7 @@ class AUVDepthControlGameEnv(gym.Env):
             0,
             self.gen_random.uniform(low = -self.pitch_limit/4.0, high = self.pitch_limit/4.0, size=1),
             0,
-            self.gen_random.uniform(low = 0.5, high = 1.5, size=1)
+            self.gen_random.uniform(low = 0.95, high = 1.05, size=1)
         ], dtype=np.float32)
 
         # Update the AUV state and error state
@@ -146,7 +146,7 @@ class AUVDepthControlGameEnv(gym.Env):
 
         # If the simulation ends early, then the reward is changed to a large penalty
         if done:
-            reward = -10000
+            reward = 0
 
         return self.error_state, reward, done, {}
 
@@ -154,17 +154,12 @@ class AUVDepthControlGameEnv(gym.Env):
         pass
 
     def reward_fn(self):
-        Q = np.array([
-            [1,   0,   0],
-            [0, 0.1,   0],
-            [0,   0, 100]
-        ])
-        return -1 * self.error_state.dot(Q.dot(self.error_state))
+        return 1
 
     def set_goal(self, goal):
         self.goal = goal
 
-    def dynamics(self, u):
+    def dynamics(self, ctrl):
         # State vector
         # full_auv_state: [heave; pitch; pitch rate; depth]
         x = self.full_auv_state[0:3, None]
@@ -180,19 +175,20 @@ class AUVDepthControlGameEnv(gym.Env):
 
         B = np.array(
             [
-            [0.007],
-            [0.001],
-            [0.026]
+            [0.07],
+            [0.01],
+            [0.26]
         ], dtype=np.float32)
 
         # Limit control
-        u = self.clamp(u, -self.max_fin_angle, self.max_fin_angle)
+        u = self.clamp(ctrl[0], -self.max_fin_angle, self.max_fin_angle)
+        v = self.clamp(ctrl[1], -self.max_fin_angle, self.max_fin_angle)
 
         # Linear model update
-        xp1 = (A@x) + (B*u)
+        xp1 = (A@x) + (B*(u + v))
 
         # Update Depth (nonlinear)
-        depth = depth - self.buoy*self.mass*self.dt + (x[0]*np.cos(x[1]) - self.target_speed*np.sin(x[1]))*self.dt
+        depth = depth - x[0]*np.cos(x[1])*self.dt - 0.001 
 
         # Return the full dynamics
         new_state = np.append(xp1,depth)

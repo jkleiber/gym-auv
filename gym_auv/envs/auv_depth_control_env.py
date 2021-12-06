@@ -82,7 +82,7 @@ class AUVDepthControlEnv(gym.Env):
             low = -1*self.max_fin_angle, high = self.max_fin_angle, shape = (2,), dtype = np.float32
             )
 
-        # Define the goal state to be at 7m depth
+        # Define the goal state to be at 1m depth
         self.goal = np.array([
             0,
             0,
@@ -137,11 +137,11 @@ class AUVDepthControlEnv(gym.Env):
 
         # Done if the vehicle re-surfaces or violates the max depth
         if depth <= 0.7 or depth > self.depth_limit:
-            print(f"Depth limit violated: {depth} meters")
+            # print(f"Depth limit violated: {depth} meters")
             done = True
         # Done if the pitch exceeds the limits
         elif pitch > self.pitch_limit or pitch < -self.pitch_limit:
-            print(f"Pitch limit violated: {pitch} radians")
+            # print(f"Pitch limit violated: {pitch} radians")
             done = True
 
         # If the simulation ends early, then the reward is changed to zero
@@ -192,7 +192,7 @@ class AUVDepthControlEnv(gym.Env):
         xp1 = (A@x) + (B*u)
 
         # Update Depth (nonlinear)
-        depth = depth - x[0]*np.cos(x[1])*self.dt - 0.001 + self.gen_random.normal(0,0.01)# self.buoy*self.mass*self.dt + (x[0]*np.cos(x[1]) - self.target_speed*np.sin(x[1]))*self.dt
+        depth = depth - x[0]*np.cos(x[1])*self.dt - 0.001 + self.gen_random.normal(0,0.04)# self.buoy*self.mass*self.dt + (x[0]*np.cos(x[1]) - self.target_speed*np.sin(x[1]))*self.dt
 
         # Return the full dynamics
         new_state = np.append(xp1,depth)
