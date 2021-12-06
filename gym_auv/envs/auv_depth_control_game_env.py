@@ -2,13 +2,13 @@
 AUV dynamical system implemented by Justin Kleiber
 """
 
-from math import cos, fmod
+from math import cos, fmod, radians
 import gym
 from gym import spaces
 
 import numpy as np
 
-class AUVControlEnv(gym.Env):
+class AUVDepthControlGameEnv(gym.Env):
     """
     Description:
         An AUV starts underwater and moves through the water at a constant
@@ -16,23 +16,23 @@ class AUVControlEnv(gym.Env):
         is to control the vehicle to some target yaw angle and depth.
 
     Observation:
-        Type: Box(5)
+        Type: Box(3)
         Num     Observation     Min                 Max
-        0       Pitch           -0.349 (-20 deg)    0.349 (20 deg)
+        0       Pitch           (-30 deg)           (30 deg)
         1       Pitch Rate      -Inf                Inf
-        2       Yaw Error       -3.14 (-180 deg)    3.14 (180 deg)
-        3       Yaw Rate        -Inf                Inf
-        4       Depth Error     -15                 15
+        2       Depth Error     -15                 15
 
     Actions:
-        Type: Box(2)
+        Type: Box(1)
         Num     Action              Min                 Max
         0       Elevator Angle      -0.349 (20 deg)     0.349 (20 deg)
-        1       Rudder Angle        -0.349 (20 deg)     0.349 (20 deg)
 
     Reward:
-        Reward is R = -1*yaw_error^2 - 1*depth_error^2 for each step. Thus being
+        Reward is the negative squared error for each step. Thus being
         closer to the target yaw and depth yields more reward.
+
+        If the vehicle exits the constraints early, then there is a large
+        penalty.
 
     Starting State:
         Depth is randomly chosen between [1, 10) meters
@@ -50,28 +50,26 @@ class AUVControlEnv(gym.Env):
     """
     def __init__(self):
         # Vehicle parameters
-        self.mass = 80
-        self.buoy = 0.002
+        self.mass = 100
+        self.buoy = 0.001
 
         # Simulation parameters
-        self.dt = 0.1
+        self.dt = 0.1 # sec
         self.target_speed = 2 # m/s
 
         # Reward parameters
-        self.early_stop_penalty = -10000
+        self.early_stop_penalty = 0 #-10000
 
         # Environment boundaries
-        self.pitch_limit = 0.349
+        self.pitch_limit = radians(30)
         self.yaw_error_limit = np.math.pi
-        self.depth_limit = 15
+        self.depth_limit = 2
         self.yaw_max = 2*np.math.pi
         self.yaw_min = 0
 
         # Define the observation space
         self.obs_limits = [
             self.pitch_limit,
-            np.finfo(np.float32).max,
-            self.yaw_error_limit,
             np.finfo(np.float32).max,
             self.depth_limit
         ]
@@ -84,13 +82,11 @@ class AUVControlEnv(gym.Env):
             low = -1*self.max_fin_angle, high = self.max_fin_angle, shape = (2,), dtype = np.float32
             )
 
-        # Define the goal state to be 90 deg yaw at 5m depth
+        # Define the goal state to be at 7m depth
         self.goal = np.array([
             0,
             0,
-            1.57,
-            0,
-            5
+            1
         ], dtype=np.float32)
 
         # Set the random seed for the environment
@@ -108,12 +104,9 @@ class AUVControlEnv(gym.Env):
         # Random initial state
         self.full_auv_state = np.array([
             0,
+            self.gen_random.uniform(low = -self.pitch_limit/4.0, high = self.pitch_limit/4.0, size=1),
             0,
-            0,
-            0,
-            self.gen_random.uniform(low = 0, high = 2*np.math.pi, size=1),
-            0,
-            self.gen_random.uniform(low = 1, high = 10, size=1)
+            self.gen_random.uniform(low = 0.5, high = 1.5, size=1)
         ], dtype=np.float32)
 
         # Update the AUV state and error state
@@ -126,10 +119,11 @@ class AUVControlEnv(gym.Env):
         # assert self.action_space.contains(action), err_msg
 
         # Compute the state update equations
+        # full_auv_state: [heave; pitch; pitch rate; depth]
         self.full_auv_state = self.dynamics(action)
 
         # State variables
-        depth = self.full_auv_state[6]
+        depth = self.full_auv_state[3]
         pitch = self.full_auv_state[1]
 
         # Update the AUV state and error state
@@ -143,14 +137,16 @@ class AUVControlEnv(gym.Env):
 
         # Done if the vehicle re-surfaces or violates the max depth
         if depth <= 0 or depth > self.depth_limit:
+            print(f"Depth limit violated: {depth} meters")
             done = True
         # Done if the pitch exceeds the limits
         elif pitch > self.pitch_limit or pitch < -self.pitch_limit:
+            print(f"Pitch limit violated: {pitch} radians")
             done = True
 
         # If the simulation ends early, then the reward is changed to a large penalty
         if done:
-            reward = self.early_stop_penalty
+            reward = -10000
 
         return self.error_state, reward, done, {}
 
@@ -158,41 +154,42 @@ class AUVControlEnv(gym.Env):
         pass
 
     def reward_fn(self):
-        return -1 * np.sqrt(self.error_state.dot(self.error_state))
+        Q = np.array([
+            [1,   0,   0],
+            [0, 0.1,   0],
+            [0,   0, 100]
+        ])
+        return -1 * self.error_state.dot(Q.dot(self.error_state))
 
     def set_goal(self, goal):
         self.goal = goal
 
     def dynamics(self, u):
         # State vector
-        # full_auv_state: [heave; pitch; pitch rate; sway; yaw; yaw rate; depth]
-        x = self.full_auv_state[0:6,None]
-        depth = self.full_auv_state[6]
+        # full_auv_state: [heave; pitch; pitch rate; depth]
+        x = self.full_auv_state[0:3, None]
+        depth = self.full_auv_state[3]
 
         # Linear System for Pitch and Yaw
-        # x states are [heave; pitch; pitch rate; sway; yaw; yaw rate]
-        A = np.array(
-            [
-            [  0.96, 0, 0.03,      0, 0,     0],
-            [-0.004, 1,  0.1,      0, 0,     0],
-            [ -0.09, 0,    1,      0, 0,     0],
-            [     0, 0,    0,      1, 0, 0.017],
-            [     0, 0,    0, -0.007, 1,   0.1],
-            [     0, 0,    0,  -0.14, 0,   0.9]
+        # x states are [heave; pitch; pitch rate]
+        A = np.array([
+            [  0.95, 0, 0.03],
+            [-0.004, 1,  0.1],
+            [ -0.09, 0,    1]
         ], dtype=np.float32)
 
         B = np.array(
             [
-            [0.007,      0],
-            [0.001,      0],
-            [0.026,      0],
-            [    0,  0.007],
-            [    0, -0.001],
-            [    0, -0.036]
+            [0.007],
+            [0.001],
+            [0.026]
         ], dtype=np.float32)
 
+        # Limit control
+        u = self.clamp(u, -self.max_fin_angle, self.max_fin_angle)
+
         # Linear model update
-        xp1 = (A@x) + (B@u)
+        xp1 = (A@x) + (B*u)
 
         # Update Depth (nonlinear)
         depth = depth - self.buoy*self.mass*self.dt + (x[0]*np.cos(x[1]) - self.target_speed*np.sin(x[1]))*self.dt
@@ -203,31 +200,10 @@ class AUVControlEnv(gym.Env):
 
     def update_auv_state(self):
         # update the open AI gym auv state from the full state
-        self.auv_state = self.full_auv_state[[1,2,4,5,6]]
+        self.auv_state = self.full_auv_state[[1,2,3]]
 
         # Get the error state
-        self.error_state = self.goal - self.auv_state
+        self.error_state = self.auv_state - self.goal
 
-        # Wrap the error for yaw
-        self.error_state[2] = self.wrap_yaw_error(
-                                self.wrap_angle(self.goal[2]),
-                                self.wrap_angle(self.auv_state[2])
-                                )
-
-    def wrap_angle(self, angle):
-        assert self.yaw_max > self.yaw_min
-        return fmod(angle, self.yaw_max - self.yaw_min)
-
-    def wrap_yaw_error(self, goal_yaw, yaw):
-        # It is assumed that yaw and goal yaw are in the range [0, 2pi) radians
-        # Find the yaw error
-        yaw_error = goal_yaw - yaw
-
-        # Wrap if the error exceeds +/- pi by finding the shorter path around
-        # the circle
-        if yaw_error > np.math.pi:
-            return (goal_yaw - self.yaw_max) + (self.yaw_min - yaw)
-        elif yaw_error < -np.math.pi:
-            return (goal_yaw - self.yaw_min) + (self.yaw_max - yaw)
-
-        return yaw_error
+    def clamp(self, x, x_min, x_max):
+        return max(min(x, x_max), x_min)
